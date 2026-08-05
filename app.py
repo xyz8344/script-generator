@@ -16,6 +16,14 @@ import collector
 # --- 加载配置（优先级：Streamlit Secrets > 环境变量 > .env > 默认值）---
 load_dotenv()
 
+# 赛道列表（模块级常量，多处共用）
+NICHE_SUGGESTIONS = [
+    "知识口播", "职场成长", "情感关系", "美妆护肤",
+    "美食探店", "穿搭时尚", "健身减脂", "母婴育儿",
+    "科技数码", "财经商业", "心理情感", "教育培训",
+    "搞笑娱乐", "旅行Vlog", "家居装修", "其他（自定义）",
+]
+
 def get_config(key: str, default: str = "") -> str:
     """多来源读取配置：st.secrets > env > default"""
     try:
@@ -338,13 +346,7 @@ if page == "🎬 脚本生成":
 
     col1, col2 = st.columns(2)
     with col1:
-        niche_suggestions = [
-            "知识口播", "职场成长", "情感关系", "美妆护肤",
-            "美食探店", "穿搭时尚", "健身减脂", "母婴育儿",
-            "科技数码", "财经商业", "心理情感", "教育培训",
-            "搞笑娱乐", "旅行Vlog", "家居装修", "其他（自定义）",
-        ]
-        niche = st.selectbox("🏷️ 赛道/领域", niche_suggestions)
+        niche = st.selectbox("🏷️ 赛道/领域", NICHE_SUGGESTIONS)
         if niche == "其他（自定义）":
             niche = st.text_input("请输入赛道", placeholder="例如：宠物训练、手工皮具...")
     with col2:
@@ -624,7 +626,7 @@ elif page == "📚 知识库管理":
         with col1:
             manual_title = st.text_input("视频标题 *", placeholder="粘贴视频标题...", key="manual_title")
             manual_url = st.text_input("视频链接", placeholder="https://...", key="manual_url")
-            manual_niche = st.selectbox("所属赛道", niche_suggestions, key="manual_niche")
+            manual_niche = st.selectbox("所属赛道", NICHE_SUGGESTIONS, key="manual_niche")
             manual_platform = st.selectbox("平台", ["抖音", "小红书", "B站", "视频号"], key="manual_platform")
         with col2:
             manual_text = st.text_area(
@@ -645,7 +647,7 @@ elif page == "📚 知识库管理":
             height=120,
             key="quick_titles",
         )
-        quick_niche = st.selectbox("统一赛道", niche_suggestions, key="quick_niche")
+        quick_niche = st.selectbox("统一赛道", NICHE_SUGGESTIONS, key="quick_niche")
 
         col1, col2, col3 = st.columns([1, 1, 3])
         with col1:
