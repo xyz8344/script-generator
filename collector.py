@@ -55,17 +55,36 @@ def search_videos(keyword: str, limit: int = 20) -> list[dict]:
 
         videos = []
         for item in data.get("data", {}).get("result", [])[:limit]:
+            bvid = item.get("bvid", "")
+            play = item.get("play", 0)
+            favorites = item.get("favorites", 0)
+            review = item.get("review", 0)
+
+            # 搜索接口不返回点赞数，通过视频详情 API 获取真实数据
+            enriched = _enrich_video_stats(bvid)
+            if enriched:
+                likes_raw = enriched["likes_raw"]
+                views_raw = enriched["views_raw"]
+                comments_raw = enriched["comments_raw"]
+            else:
+                likes_raw = favorites  # 降级：用收藏数近似
+                views_raw = play
+                comments_raw = review
+
             videos.append({
-                "bvid": item.get("bvid", ""),
+                "bvid": bvid,
                 "title": item.get("title", "").replace('<em class="keyword">', '').replace('</em>', ''),
                 "description": item.get("description", ""),
                 "tags": item.get("tag", "").split(",") if item.get("tag") else [],
-                "views": _fmt_num(item.get("play", 0)),
-                "likes": _fmt_num(item.get("favorites", 0)),
-                "comments": _fmt_num(item.get("review", 0)),
+                "views_raw": views_raw,
+                "likes_raw": likes_raw,
+                "comments_raw": comments_raw,
+                "views": _fmt_num(views_raw),
+                "likes": _fmt_num(likes_raw),
+                "comments": _fmt_num(comments_raw),
                 "duration": item.get("duration", ""),
                 "author": item.get("author", ""),
-                "url": f"https://www.bilibili.com/video/{item.get('bvid', '')}",
+                "url": f"https://www.bilibili.com/video/{bvid}",
                 "platform": "B站",
             })
         return videos
@@ -88,14 +107,21 @@ def get_popular_videos(pn: int = 1, ps: int = 30) -> list[dict]:
 
         videos = []
         for item in data.get("data", {}).get("list", []):
+            stat = item.get("stat", {})
+            view = stat.get("view", 0)
+            like = stat.get("like", 0)
+            reply = stat.get("reply", 0)
             videos.append({
                 "bvid": item.get("bvid", ""),
                 "title": item.get("title", ""),
                 "description": item.get("desc", ""),
                 "tags": [],  # 热门接口没有标签
-                "views": _fmt_num(item.get("stat", {}).get("view", 0)),
-                "likes": _fmt_num(item.get("stat", {}).get("like", 0)),
-                "comments": _fmt_num(item.get("stat", {}).get("reply", 0)),
+                "views_raw": view,
+                "likes_raw": like,
+                "comments_raw": reply,
+                "views": _fmt_num(view),
+                "likes": _fmt_num(like),
+                "comments": _fmt_num(reply),
                 "duration": item.get("duration", ""),
                 "author": item.get("owner", {}).get("name", ""),
                 "url": f"https://www.bilibili.com/video/{item.get('bvid', '')}",
@@ -181,12 +207,13 @@ def collect_and_store(
             skipped += 1
             continue
 
-        # 判断是否爆款
-        likes_str = v.get("likes", "0").replace("万", "0000").replace("+", "")
-        try:
-            likes = float(likes_str)
-        except ValueError:
-            likes = 0
+        # 判断是否爆款（用原始数值比较，避免格式化后的字符串解析误差）
+        likes = v.get("likes_raw", 0)
+        if isinstance(likes, str):
+            try:
+                likes = float(likes)
+            except ValueError:
+                likes = 0
 
         if likes < threshold_likes:
             skipped += 1
@@ -232,3 +259,25 @@ def _fmt_num(n) -> str:
     if n >= 10000:
         return f"{n / 10000:.1f}万"
     return str(n)
+
+
+def _enrich_video_stats(bvid: str) -> dict | None:
+    """通过视频详情 API 获取真实播放/点赞/评论数据"""
+    try:
+        resp = requests.get(
+            BILIBILI_VIDEO_INFO,
+            params={"bvid": bvid},
+            headers=BILIBILI_HEADERS,
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            return None
+        stat = data.get("data", {}).get("stat", {})
+        return {
+            "views_raw": stat.get("view", 0),
+            "likes_raw": stat.get("like", 0),
+            "comments_raw": stat.get("reply", 0),
+        }
+    except Exception:
+        return None
