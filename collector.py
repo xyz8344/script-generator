@@ -13,8 +13,11 @@ BILIBILI_SEARCH = "https://api.bilibili.com/x/web-interface/search/type"
 BILIBILI_POPULAR = "https://api.bilibili.com/x/web-interface/popular"
 BILIBILI_VIDEO_INFO = "https://api.bilibili.com/x/web-interface/view"
 BILIBILI_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://www.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Cookie": "buvid3=auto; buvid4=auto; buvid_fp=auto",  # 基础标识，降低风控概率
 }
 
 # 赛道 → B站搜索关键词映射
@@ -49,8 +52,12 @@ def search_videos(keyword: str, limit: int = 20) -> list[dict]:
             BILIBILI_SEARCH, params=params,
             headers=BILIBILI_HEADERS, timeout=15
         )
+        if _is_blocked(resp):
+            print("[collector] 搜索被B站风控拦截，返回了验证页面")
+            return []
         data = resp.json()
         if data.get("code") != 0:
+            print(f"[collector] 搜索API返回错误: code={data.get('code')}, message={data.get('message', '')}")
             return []
 
         videos = []
@@ -60,28 +67,17 @@ def search_videos(keyword: str, limit: int = 20) -> list[dict]:
             favorites = item.get("favorites", 0)
             review = item.get("review", 0)
 
-            # 搜索接口不返回点赞数，通过视频详情 API 获取真实数据
-            enriched = _enrich_video_stats(bvid)
-            if enriched:
-                likes_raw = enriched["likes_raw"]
-                views_raw = enriched["views_raw"]
-                comments_raw = enriched["comments_raw"]
-            else:
-                likes_raw = favorites  # 降级：用收藏数近似
-                views_raw = play
-                comments_raw = review
-
             videos.append({
                 "bvid": bvid,
                 "title": item.get("title", "").replace('<em class="keyword">', '').replace('</em>', ''),
                 "description": item.get("description", ""),
                 "tags": item.get("tag", "").split(",") if item.get("tag") else [],
-                "views_raw": views_raw,
-                "likes_raw": likes_raw,
-                "comments_raw": comments_raw,
-                "views": _fmt_num(views_raw),
-                "likes": _fmt_num(likes_raw),
-                "comments": _fmt_num(comments_raw),
+                "views_raw": play,
+                "likes_raw": favorites,   # 搜索接口无点赞字段，先用收藏数；后续在 collect_and_store 中通过详情API补充
+                "comments_raw": review,
+                "views": _fmt_num(play),
+                "likes": _fmt_num(favorites),
+                "comments": _fmt_num(review),
                 "duration": item.get("duration", ""),
                 "author": item.get("author", ""),
                 "url": f"https://www.bilibili.com/video/{bvid}",
@@ -101,6 +97,9 @@ def get_popular_videos(pn: int = 1, ps: int = 30) -> list[dict]:
             BILIBILI_POPULAR, params=params,
             headers=BILIBILI_HEADERS, timeout=15
         )
+        if _is_blocked(resp):
+            print("[collector] 热门列表被B站风控拦截")
+            return []
         data = resp.json()
         if data.get("code") != 0:
             return []
@@ -192,7 +191,11 @@ def collect_and_store(
         raw_videos = search_videos(keyword, limit=max_videos)
 
     if not raw_videos:
-        return {"added": 0, "skipped": 0, "errors": 0, "videos": [], "message": "未获取到视频"}
+        source_desc = "B站热门" if use_popular else f"B站搜索「{custom_keyword or NICHE_KEYWORDS.get(niche, niche)}」"
+        return {
+            "added": 0, "skipped": 0, "errors": 0, "videos": [],
+            "message": f"❌ 未获取到视频 — {source_desc} 返回了空结果。\n\n可能原因：① B站 API 限流或拦截（Streamlit Cloud 海外服务器）② 关键词无匹配结果 ③ 网络超时\n\n💡 建议：切换为「热门榜单」模式试试，或降低点赞阈值。"
+        }
 
     # 2. 筛选爆款
     added, skipped, errors = 0, 0, 0
@@ -208,7 +211,19 @@ def collect_and_store(
             skipped += 1
             continue
 
-        # 判断是否爆款（用原始数值比较，避免格式化后的字符串解析误差）
+        # 搜索模式下，收藏数不准确，通过视频详情 API 获取真实点赞数
+        if not use_popular:
+            enriched = _enrich_video_stats(v["bvid"])
+            if enriched:
+                v["likes_raw"] = enriched["likes_raw"]
+                v["views_raw"] = enriched["views_raw"]
+                v["comments_raw"] = enriched["comments_raw"]
+                v["likes"] = _fmt_num(enriched["likes_raw"])
+                v["views"] = _fmt_num(enriched["views_raw"])
+                v["comments"] = _fmt_num(enriched["comments_raw"])
+            time.sleep(0.3)  # 详情API限速
+
+        # 判断是否爆款（用原始数值比较）
         likes = v.get("likes_raw", 0)
         if isinstance(likes, str):
             try:
@@ -253,6 +268,14 @@ def collect_and_store(
     }
 
 
+def _is_blocked(resp) -> bool:
+    """检测 B站 API 是否被风控拦截（返回 HTML 而非 JSON）"""
+    content_type = resp.headers.get("Content-Type", "")
+    if "text/html" in content_type or "<html" in resp.text[:200].lower():
+        return True
+    return False
+
+
 def _fmt_num(n) -> str:
     """格式化数字（B站 API 返回的是原始数字）"""
     if isinstance(n, str):
@@ -269,8 +292,10 @@ def _enrich_video_stats(bvid: str) -> dict | None:
             BILIBILI_VIDEO_INFO,
             params={"bvid": bvid},
             headers=BILIBILI_HEADERS,
-            timeout=10,
+            timeout=4,
         )
+        if _is_blocked(resp):
+            return None
         data = resp.json()
         if data.get("code") != 0:
             return None
