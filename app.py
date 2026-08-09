@@ -488,102 +488,265 @@ elif page == "📚 知识库管理":
     # === 自动更新 Tab ===
     with tab1:
         st.markdown("### 🔄 一键更新案例库")
-        st.markdown("系统会自动搜索 B站热门视频，筛选爆款，AI 拆解脚本结构后入库。")
 
-        # 采集设置
-        st.markdown("#### ⚙️ 采集设置")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            collect_niche = st.selectbox(
-                "🎯 目标赛道",
-                ["知识口播", "职场成长", "情感关系", "美妆护肤",
-                 "美食探店", "穿搭时尚", "健身减脂", "科技数码",
-                 "财经商业", "搞笑娱乐", "旅行Vlog", "家居装修"],
-                key="collect_niche",
-                help="选择要搜索的赛道，系统会使用对应关键词搜索"
-            )
-        with col2:
-            threshold = st.number_input(
-                "🔥 爆款点赞阈值",
-                min_value=1000,
-                max_value=1000000,
-                value=10000,
-                step=1000,
-                help="点赞数超过这个值才算是爆款，会被收录"
-            )
-        with col3:
-            max_collect = st.slider(
-                "📊 最多采集条数",
-                min_value=5,
-                max_value=30,
-                value=10,
-                help="一次最多采集多少条视频"
-            )
-
-        # 采集方式
-        collect_method = st.radio(
-            "📡 采集来源",
-            ["🔍 关键词搜索（精准但量少）", "🔥 热门榜单（量大但不够精准）"],
+        # ===== 平台选择 =====
+        platform_choice = st.radio(
+            "📱 内容平台",
+            ["B站", "抖音", "小红书"],
             horizontal=True,
+            help="B站支持自动搜索 + 热门榜，抖音/小红书需手动粘贴链接"
         )
 
-        # 自定义关键词（仅搜索模式）
-        custom_keyword = ""
-        if "关键词" in collect_method:
-            custom_keyword = st.text_input(
-                "🔑 自定义搜索关键词（留空则自动根据赛道匹配）",
-                placeholder="例如：AI 工具 效率提升",
-                key="custom_keyword",
+        # ========== B站模式：全自动采集 ==========
+        if platform_choice == "B站":
+            st.markdown("系统会自动搜索 B站热门视频，筛选爆款，AI 拆解脚本结构后入库。")
+
+            # 时间范围
+            time_options = [("7天内", 7), ("14天内", 14), ("30天内", 30), ("不限", 0)]
+            max_age_days = st.selectbox(
+                "📅 发布时间范围",
+                time_options,
+                format_func=lambda x: x[0],
+                index=0,
+                help="只收录指定天数内发布的视频"
+            )[1]
+
+            # 采集设置
+            st.markdown("#### ⚙️ 采集设置")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                collect_niche = st.selectbox(
+                    "🎯 目标赛道",
+                    ["知识口播", "职场成长", "情感关系", "美妆护肤",
+                     "美食探店", "穿搭时尚", "健身减脂", "科技数码",
+                     "财经商业", "搞笑娱乐", "旅行Vlog", "家居装修"],
+                    key="collect_niche",
+                    help="选择要搜索的赛道，系统会使用对应关键词搜索"
+                )
+            with col2:
+                threshold = st.number_input(
+                    "🔥 爆款点赞阈值",
+                    min_value=1000,
+                    max_value=1000000,
+                    value=10000,
+                    step=1000,
+                    help="点赞数超过这个值才算是爆款，会被收录"
+                )
+            with col3:
+                max_collect = st.slider(
+                    "📊 最多采集条数",
+                    min_value=5,
+                    max_value=30,
+                    value=10,
+                    help="一次最多采集多少条视频"
+                )
+
+            # 采集方式
+            collect_method = st.radio(
+                "📡 采集来源",
+                ["🔍 关键词搜索（精准但量少）", "🔥 热门榜单（量大但不够精准）"],
+                horizontal=True,
             )
 
-        # 更新按钮
-        st.markdown("")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            update_btn = st.button(
-                "🔄 开始更新案例库",
-                type="primary",
-                use_container_width=True,
+            # 自定义关键词（仅搜索模式）
+            custom_keyword = ""
+            if "关键词" in collect_method:
+                custom_keyword = st.text_input(
+                    "🔑 自定义搜索关键词（留空则自动根据赛道匹配）",
+                    placeholder="例如：AI 工具 效率提升",
+                    key="custom_keyword",
+                )
+
+            # 更新按钮
+            st.markdown("")
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                update_btn = st.button(
+                    "🔄 开始更新案例库",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if update_btn:
+                use_popular = "热门" in collect_method
+                progress = st.progress(0, text="准备中...")
+
+                with st.status("🔄 正在采集...", expanded=True) as status:
+                    try:
+                        progress.progress(10, text="🔍 搜索热门视频...")
+
+                        result = collector.collect_and_store(
+                            niche=collect_niche,
+                            llm_call=call_llm,
+                            threshold_likes=threshold,
+                            max_videos=max_collect,
+                            use_popular=use_popular,
+                            custom_keyword=custom_keyword,
+                            max_age_days=max_age_days,
+                        )
+
+                        progress.progress(90, text="📝 处理完成...")
+
+                        st.success(f"✅ {result['message']}")
+                        if "message" in result and result.get("videos"):
+                            pass  # 有结果，下面展示
+
+                        # 展示新增的案例
+                        if result.get("videos"):
+                            st.markdown("#### 📝 本次新增案例")
+                            for v in result["videos"]:
+                                pubdate_info = f" · 📅 {v.get('pubdate_str', '')}" if v.get('pubdate_str') else ""
+                                with st.expander(f"🔥 {v['title'][:60]}... （{v['likes']} 赞{pubdate_info}）"):
+                                    st.markdown(f"**链接**: {v['url']}")
+                                    st.markdown(f"**数据**: {v['views']} 播放 · {v['likes']} 点赞 · {v['comments']} 评论")
+                                    st.markdown(f"**作者**: {v['author']}")
+                                    st.markdown("**拆解分析**:")
+                                    st.markdown(v.get('script_analysis', '无'))
+
+                        progress.progress(100, text="✅ 完成！")
+                        status.update(label=f"✅ 更新完成 — {result['message']}", state="complete")
+
+                    except Exception as e:
+                        status.update(label="❌ 更新失败", state="error")
+                        st.error(f"出错了：{str(e)}")
+
+        # ========== 抖音 / 小红书：半自动链接录入 ==========
+        else:
+            st.info(
+                f"💡 **{platform_choice}** 没有公开的内容搜索 API，无法像 B站 一样自动搜索热门视频。\n\n"
+                "但你可以粘贴目标视频的分享链接，系统会自动抓取标题并调用 AI 拆解脚本结构入库。\n\n"
+                "📌 **提示**：也可以切换到右侧的「✍️ 一键录入」标签，粘贴单个链接进行完整分析。"
             )
 
-        if update_btn:
-            use_popular = "热门" in collect_method
-            progress = st.progress(0, text="准备中...")
+            st.markdown("#### ⚙️ 采集设置")
+            col1, col2 = st.columns(2)
+            with col1:
+                manual_niche = st.selectbox(
+                    "🎯 目标赛道",
+                    ["知识口播", "职场成长", "情感关系", "美妆护肤",
+                     "美食探店", "穿搭时尚", "健身减脂", "科技数码",
+                     "财经商业", "搞笑娱乐", "旅行Vlog", "家居装修"],
+                    key="manual_collect_niche",
+                )
+            with col2:
+                manual_threshold = st.number_input(
+                    "🔥 爆款点赞参考值",
+                    min_value=1000,
+                    max_value=1000000,
+                    value=10000,
+                    step=1000,
+                    help="抖音/小红书无法自动获取真实点赞数，此值仅作记录参考",
+                    key="manual_threshold",
+                )
 
-            with st.status("🔄 正在采集...", expanded=True) as status:
-                try:
-                    progress.progress(10, text="🔍 搜索热门视频...")
+            st.markdown("#### 🔗 视频链接（每行一个）")
+            urls_text = st.text_area(
+                "粘贴视频分享链接",
+                placeholder="https://www.douyin.com/video/xxxxx\nhttps://www.xiaohongshu.com/explore/xxxxx",
+                height=150,
+                key="manual_urls_batch",
+            )
 
-                    result = collector.collect_and_store(
-                        niche=collect_niche,
-                        llm_call=call_llm,
-                        threshold_likes=threshold,
-                        max_videos=max_collect,
-                        use_popular=use_popular,
-                        custom_keyword=custom_keyword,
-                    )
+            # 链接预览（尝试抓取标题）
+            if urls_text.strip():
+                urls = [u.strip() for u in urls_text.split("\n") if u.strip()]
+                st.markdown(f"📊 共解析到 **{len(urls)}** 个链接")
+                with st.expander("📡 标题预览（自动抓取）", expanded=len(urls) <= 3):
+                    for i, url in enumerate(urls[:10]):
+                        title = _fetch_page_title(url)
+                        if title:
+                            st.caption(f"{i+1}. ✅ {title[:80]}")
+                        else:
+                            st.caption(f"{i+1}. ⚠️ 无法获取标题，将使用链接作为标识")
 
-                    progress.progress(90, text="📝 处理完成...")
+            # 分析按钮
+            st.markdown("")
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                manual_btn = st.button(
+                    "🔍 分析并入库",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not urls_text.strip(),
+                    key="manual_collect_btn",
+                )
 
-                    st.success(f"✅ {result['message']}")
+            if manual_btn and urls_text.strip():
+                urls = [u.strip() for u in urls_text.split("\n") if u.strip()]
+                progress = st.progress(0, text="准备中...")
+                added, failed = 0, 0
 
-                    # 展示新增的案例
-                    if result["videos"]:
-                        st.markdown("#### 📝 本次新增案例")
-                        for v in result["videos"]:
-                            with st.expander(f"🔥 {v['title'][:60]}... （{v['likes']} 赞）"):
-                                st.markdown(f"**链接**: {v['url']}")
-                                st.markdown(f"**数据**: {v['views']} 播放 · {v['likes']} 点赞 · {v['comments']} 评论")
-                                st.markdown(f"**作者**: {v['author']}")
-                                st.markdown("**拆解分析**:")
-                                st.markdown(v.get('script_analysis', '无'))
+                with st.status(f"🔄 正在处理 {len(urls)} 个链接...", expanded=True) as status:
+                    for i, url in enumerate(urls):
+                        progress.progress(
+                            int((i + 1) / len(urls) * 100),
+                            text=f"处理中 ({i+1}/{len(urls)})..."
+                        )
+
+                        # 检查去重
+                        existing = db.get_all(500)
+                        if url in {c.get("url", "") for c in existing}:
+                            st.caption(f"⏭️ [{i+1}] 已存在，跳过：{url[:60]}...")
+                            continue
+
+                        # 1. 抓取标题
+                        title = _fetch_page_title(url)
+                        if not title:
+                            title = url.rstrip("/").split("/")[-1][:50] or f"未命名视频_{i+1}"
+
+                        # 2. 构建 video_info
+                        video_info = {
+                            "title": title,
+                            "url": url,
+                            "description": "",
+                            "tags": [],
+                            "views": "?",
+                            "likes": f"{manual_threshold}+" if manual_threshold else "?",
+                            "comments": "?",
+                            "likes_raw": 0,
+                            "duration": "",
+                            "author": "",
+                            "platform": platform_choice,
+                        }
+
+                        # 3. AI 拆解
+                        try:
+                            analysis = collector.analyze_script_structure(video_info, call_llm)
+                            # 4. 入库
+                            case = {
+                                "title": title,
+                                "url": url,
+                                "platform": platform_choice,
+                                "niche": manual_niche,
+                                "views": "?",
+                                "likes": f"{manual_threshold}+",
+                                "comments": "?",
+                                "duration": "",
+                                "author": "",
+                                "description": "",
+                                "tags": [],
+                                "script_analysis": analysis,
+                                "source": "半自动采集",
+                                "pubdate": 0,
+                                "pubdate_str": "",
+                            }
+                            db.add_case(case)
+                            added += 1
+                            st.caption(f"✅ [{i+1}] 已入库：{title[:50]}...")
+                            time.sleep(0.5)  # LLM 限速
+                        except Exception as e:
+                            failed += 1
+                            st.warning(f"❌ [{i+1}] 处理失败：{str(e)[:100]}")
 
                     progress.progress(100, text="✅ 完成！")
-                    status.update(label=f"✅ 更新完成 — {result['message']}", state="complete")
-
-                except Exception as e:
-                    status.update(label="❌ 更新失败", state="error")
-                    st.error(f"出错了：{str(e)}")
+                    if added > 0:
+                        st.success(f"✅ 成功入库 {added} 条案例（赛道：{manual_niche}）")
+                    if failed > 0:
+                        st.warning(f"⚠️ {failed} 条处理失败")
+                    status.update(
+                        label=f"✅ 完成 — 新增 {added} 条，失败 {failed} 条",
+                        state="complete"
+                    )
 
     # === 案例浏览 Tab ===
     with tab2:

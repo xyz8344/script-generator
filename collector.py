@@ -103,60 +103,105 @@ def _sign_params(params: dict) -> dict:
     return params
 
 
-def search_videos(keyword: str, limit: int = 20) -> list[dict]:
-    """搜索B站视频（WBI 签名，海外服务器可用）"""
-    params = {
-        "search_type": "video",
-        "keyword": keyword,
-        "order": "click",
-        "duration": 4,
-        "page": 1,
-    }
-    params = _sign_params(params)
-    try:
-        resp = requests.get(
-            BILIBILI_SEARCH, params=params,
-            headers=BILIBILI_HEADERS, timeout=15
-        )
-        if _is_blocked(resp):
-            print("[collector] 搜索被B站风控拦截，返回了验证页面")
-            return []
-        data = resp.json()
-        if data.get("code") != 0:
-            print(f"[collector] 搜索API返回错误: code={data.get('code')}, message={data.get('message', '')}")
-            return []
+def search_videos(keyword: str, limit: int = 20, max_age_days: int = 0) -> list[dict]:
+    """搜索B站视频（WBI 签名，海外服务器可用）
 
-        videos = []
-        for item in data.get("data", {}).get("result", [])[:limit]:
-            bvid = item.get("bvid", "")
-            play = item.get("play", 0)
-            favorites = item.get("favorites", 0)
-            review = item.get("review", 0)
+    参数:
+        max_age_days: 只保留最近 N 天发布的视频，0 = 不限
+    """
+    now_ts = int(time.time())
+    cutoff_ts = now_ts - max_age_days * 86400 if max_age_days > 0 else 0
 
-            videos.append({
-                "bvid": bvid,
-                "title": item.get("title", "").replace('<em class="keyword">', '').replace('</em>', ''),
-                "description": item.get("description", ""),
-                "tags": item.get("tag", "").split(",") if item.get("tag") else [],
-                "views_raw": play,
-                "likes_raw": favorites,   # 搜索接口无点赞字段，先用收藏数；后续在 collect_and_store 中通过详情API补充
-                "comments_raw": review,
-                "views": _fmt_num(play),
-                "likes": _fmt_num(favorites),
-                "comments": _fmt_num(review),
-                "duration": item.get("duration", ""),
-                "author": item.get("author", ""),
-                "url": f"https://www.bilibili.com/video/{bvid}",
-                "platform": "B站",
-            })
-        return videos
-    except Exception as e:
-        print(f"[collector] 搜索失败: {e}")
-        return []
+    videos = []
+    for page in range(1, 4):  # 最多翻 3 页
+        params = {
+            "search_type": "video",
+            "keyword": keyword,
+            "order": "pubdate",  # 按最新发布排序，配合时间过滤
+            "duration": 0,       # 0=全部时长
+            "page": page,
+            "page_size": 50,     # 每页50条，减少翻页次数
+        }
+        params = _sign_params(params)
+        try:
+            resp = requests.get(
+                BILIBILI_SEARCH, params=params,
+                headers=BILIBILI_HEADERS, timeout=15
+            )
+            if _is_blocked(resp):
+                print("[collector] 搜索被B站风控拦截，返回了验证页面")
+                break
+            data = resp.json()
+            if data.get("code") != 0:
+                print(f"[collector] 搜索API返回错误: code={data.get('code')}, message={data.get('message', '')}")
+                break
+
+            results = data.get("data", {}).get("result", [])
+            if not results:
+                break
+
+            for item in results:
+                # 时间过滤：pubdate 超出窗口则跳过
+                pubdate = item.get("pubdate", 0)
+                if cutoff_ts and pubdate < cutoff_ts:
+                    continue  # 还在窗口中，但这条太老；因为是 pubdate 倒序，后续可能还有更新的
+
+                if isinstance(pubdate, int) and pubdate > 0:
+                    pubdate_str = datetime.fromtimestamp(pubdate).strftime("%Y-%m-%d")
+                else:
+                    pubdate_str = ""
+
+                bvid = item.get("bvid", "")
+                play = item.get("play", 0)
+                favorites = item.get("favorites", 0)
+                review = item.get("review", 0)
+
+                videos.append({
+                    "bvid": bvid,
+                    "title": item.get("title", "").replace('<em class="keyword">', '').replace('</em>', ''),
+                    "description": item.get("description", ""),
+                    "tags": item.get("tag", "").split(",") if item.get("tag") else [],
+                    "views_raw": play,
+                    "likes_raw": favorites,
+                    "comments_raw": review,
+                    "views": _fmt_num(play),
+                    "likes": _fmt_num(favorites),
+                    "comments": _fmt_num(review),
+                    "duration": item.get("duration", ""),
+                    "author": item.get("author", ""),
+                    "url": f"https://www.bilibili.com/video/{bvid}",
+                    "platform": "B站",
+                    "pubdate": pubdate,
+                    "pubdate_str": pubdate_str,
+                })
+
+                if len(videos) >= limit * 2:  # 多取一些，补偿 enrich 后的筛选损失
+                    return videos
+
+            # 检查是否最后一页的结果已经超出时间窗口
+            if cutoff_ts and results:
+                last_pubdate = results[-1].get("pubdate", 0)
+                if last_pubdate < cutoff_ts:
+                    break  # 最后一页尾部已超出窗口，无需翻页
+
+        except Exception as e:
+            print(f"[collector] 搜索失败 (page={page}): {e}")
+            break
+
+        time.sleep(0.3)  # 翻页限速
+
+    return videos
 
 
-def get_popular_videos(pn: int = 1, ps: int = 30) -> list[dict]:
-    """获取B站热门视频"""
+def get_popular_videos(pn: int = 1, ps: int = 30, max_age_days: int = 0) -> list[dict]:
+    """获取B站热门视频
+
+    参数:
+        max_age_days: 只保留最近 N 天发布的视频，0 = 不限
+    """
+    now_ts = int(time.time())
+    cutoff_ts = now_ts - max_age_days * 86400 if max_age_days > 0 else 0
+
     params = {"pn": pn, "ps": ps}
     try:
         resp = requests.get(
@@ -176,11 +221,22 @@ def get_popular_videos(pn: int = 1, ps: int = 30) -> list[dict]:
             view = stat.get("view", 0)
             like = stat.get("like", 0)
             reply = stat.get("reply", 0)
+
+            pubdate = item.get("pubdate", 0)
+            if isinstance(pubdate, int) and pubdate > 0:
+                pubdate_str = datetime.fromtimestamp(pubdate).strftime("%Y-%m-%d")
+            else:
+                pubdate_str = ""
+
+            # 时间过滤（热门榜可能有 pubdate）
+            if cutoff_ts and pubdate and pubdate < cutoff_ts:
+                continue
+
             videos.append({
                 "bvid": item.get("bvid", ""),
                 "title": item.get("title", ""),
                 "description": item.get("desc", ""),
-                "tags": [],  # 热门接口没有标签
+                "tags": [],
                 "views_raw": view,
                 "likes_raw": like,
                 "comments_raw": reply,
@@ -191,6 +247,8 @@ def get_popular_videos(pn: int = 1, ps: int = 30) -> list[dict]:
                 "author": item.get("owner", {}).get("name", ""),
                 "url": f"https://www.bilibili.com/video/{item.get('bvid', '')}",
                 "platform": "B站",
+                "pubdate": pubdate,
+                "pubdate_str": pubdate_str,
             })
         return videos
     except Exception as e:
@@ -235,6 +293,7 @@ def collect_and_store(
     max_videos: int = 10,
     use_popular: bool = False,
     custom_keyword: str = "",
+    max_age_days: int = 7,
 ) -> dict:
     """
     采集 + 拆解 + 入库 一条龙
@@ -245,16 +304,18 @@ def collect_and_store(
         threshold_likes: 点赞阈值
         max_videos: 最多采集数量
         use_popular: True=热门列表, False=关键词搜索
+        max_age_days: 只保留最近 N 天发布的视频，0 = 不限（默认 7 天）
+        custom_keyword: 自定义搜索关键词
 
     返回:
         {"added": N, "skipped": N, "errors": N, "videos": [...]}
     """
     # 1. 获取视频列表
     if use_popular:
-        raw_videos = get_popular_videos(ps=max_videos)
+        raw_videos = get_popular_videos(ps=max(max_videos, 30), max_age_days=max_age_days)
     else:
         keyword = custom_keyword if custom_keyword else NICHE_KEYWORDS.get(niche, niche)
-        raw_videos = search_videos(keyword, limit=max_videos)
+        raw_videos = search_videos(keyword, limit=max_videos, max_age_days=max_age_days)
 
     if not raw_videos:
         source_desc = "B站热门" if use_popular else f"B站搜索「{custom_keyword or NICHE_KEYWORDS.get(niche, niche)}」"
@@ -287,6 +348,10 @@ def collect_and_store(
                 v["likes"] = _fmt_num(enriched["likes_raw"])
                 v["views"] = _fmt_num(enriched["views_raw"])
                 v["comments"] = _fmt_num(enriched["comments_raw"])
+                # 补充 pubdate（搜索 API 的 pubdate 可能不准，详情 API 更可靠）
+                if enriched.get("pubdate"):
+                    v["pubdate"] = enriched["pubdate"]
+                    v["pubdate_str"] = datetime.fromtimestamp(enriched["pubdate"]).strftime("%Y-%m-%d")
             time.sleep(0.3)  # 详情API限速
 
         # 判断是否爆款（用原始数值比较）
@@ -320,6 +385,8 @@ def collect_and_store(
             "tags": v.get("tags", []),
             "script_analysis": analysis,
             "source": "自动采集",
+            "pubdate": v.get("pubdate", 0),
+            "pubdate_str": v.get("pubdate_str", ""),
         }
         db.add_case(case)
         added += 1
@@ -352,7 +419,7 @@ def _fmt_num(n) -> str:
 
 
 def _enrich_video_stats(bvid: str) -> dict | None:
-    """通过视频详情 API 获取真实播放/点赞/评论数据"""
+    """通过视频详情 API 获取真实播放/点赞/评论数据 + 发布时间"""
     try:
         resp = requests.get(
             BILIBILI_VIDEO_INFO,
@@ -366,10 +433,12 @@ def _enrich_video_stats(bvid: str) -> dict | None:
         if data.get("code") != 0:
             return None
         stat = data.get("data", {}).get("stat", {})
+        pubdate = data.get("data", {}).get("pubdate", 0)
         return {
             "views_raw": stat.get("view", 0),
             "likes_raw": stat.get("like", 0),
             "comments_raw": stat.get("reply", 0),
+            "pubdate": pubdate,
         }
     except Exception:
         return None
