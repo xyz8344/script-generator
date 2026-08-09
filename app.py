@@ -109,6 +109,33 @@ st.markdown("""
 
 
 # --- LLM 调用 ---
+def _fetch_page_title(url: str) -> str:
+    """尝试从网页抓取标题（og:title 或 <title>），用于抖音/小红书等平台的链接"""
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            },
+            timeout=8,
+            allow_redirects=True,
+        )
+        html = resp.text[:50000]  # 只读前 50KB
+        # 优先 og:title
+        og_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        if og_match:
+            return og_match.group(1).strip()
+        # 退而求其次：<title>
+        title_match = re.search(r'<title[^>]*>(.+?)</title>', html, re.IGNORECASE)
+        if title_match:
+            return title_match.group(1).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def call_llm(system_prompt: str, user_message: str, temperature: float = 0.85) -> str:
     """调用 DeepSeek API（Anthropic 兼容接口）"""
     api_key = st.session_state.get("user_api_key") or DEFAULT_API_KEY
@@ -603,7 +630,7 @@ elif page == "📚 知识库管理":
             st.markdown(f"共 **{len(filtered)}** 条案例")
             st.markdown("---")
 
-            for c in reversed(filtered[-20:]):
+            for c in filtered[:20]:
                 source_badge = '<span class="badge badge-auto">🤖 自动采集</span>' if c.get("source") == "自动采集" else '<span class="badge badge-manual">✍️ 手动录入</span>'
                 st.markdown(f"""
 <div class="case-item">
@@ -652,22 +679,47 @@ elif page == "📚 知识库管理":
             elif "weishi" in quick_url:
                 platform_detected = "视频号"
 
+        # 非 B站 链接：需要用户输入标题（或自动抓取）
+        auto_title = ""
+        if quick_url and platform_detected not in ("B站", "未知"):
+            # 尝试从页面抓取标题
+            auto_title = _fetch_page_title(quick_url)
+            if auto_title:
+                st.caption(f"📡 自动获取标题：**{auto_title[:60]}**")
+
+        # 非 B站 链接显示标题输入框
+        quick_title = ""
+        if quick_url and platform_detected not in ("B站", "未知"):
+            quick_title = st.text_input(
+                "📝 视频标题（必填）",
+                value=auto_title,
+                placeholder="输入视频标题，例如：3个让你变强的AI工具...",
+                key="quick_title",
+            )
+
+        is_bilibili = "bilibili" in quick_url and "BV" in quick_url
+        can_analyze = bool(quick_url) and (is_bilibili or bool(quick_title.strip()))
+
         col1, col2 = st.columns([1, 3])
         with col1:
             analyze_btn = st.button(
                 "🔍 一键分析",
                 type="primary",
                 use_container_width=True,
-                disabled=not quick_url,
+                disabled=not can_analyze,
             )
+        with col2:
+            if quick_url and not can_analyze:
+                if not is_bilibili and not quick_title.strip():
+                    st.caption("⚠️ 抖音/小红书链接需要手动输入视频标题")
 
-        if analyze_btn and quick_url:
+        if analyze_btn and quick_url and can_analyze:
             with st.status("🔄 处理中...", expanded=True) as status:
                 bvid = None
                 video_info = None
 
                 # B站链接：自动获取视频信息
-                if "bilibili" in quick_url and "BV" in quick_url:
+                if is_bilibili:
                     st.write("📡 正在从 B站 获取视频信息...")
                     match = re.search(r'BV[a-zA-Z0-9]+', quick_url)
                     if match:
@@ -703,9 +755,25 @@ elif page == "📚 知识库管理":
                                     st.write(f"📊 {video_info['views']} 播放 · {video_info['likes']} 点赞")
                             except Exception:
                                 pass
+                else:
+                    # 非 B站 链接：使用用户输入的标题
+                    video_info = {
+                        "title": quick_title.strip(),
+                        "url": quick_url,
+                        "description": "",
+                        "tags": [],
+                        "views": "?",
+                        "likes": "?",
+                        "comments": "?",
+                        "likes_raw": 0,
+                        "duration": "",
+                        "author": "",
+                        "platform": platform_detected,
+                    }
+                    st.write(f"📡 平台：**{platform_detected}**，将基于标题 + 链接进行分析")
 
+                # B站获取失败的回退
                 if not video_info:
-                    # 非B站链接或获取失败：让用户补充标题
                     video_info = {
                         "title": quick_url.split("/")[-1][:50] if quick_url else "未命名视频",
                         "url": quick_url,

@@ -84,12 +84,12 @@ def search(query: str, niche: str = "", limit: int = 5) -> list[dict]:
         if score > 0:
             scored.append((score, c))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (x[0], x[1].get("created_at", "")), reverse=True)
     return [item[1] for item in scored[:limit]]
 
 
 def get_recent(days: int = 7, limit: int = 50) -> list[dict]:
-    """获取最近 N 天的案例"""
+    """获取最近 N 天的案例（最新在前）"""
     cases = _load()
     cutoff = datetime.now() - timedelta(days=days)
     recent = []
@@ -101,12 +101,16 @@ def get_recent(days: int = 7, limit: int = 50) -> list[dict]:
                 recent.append(c)
         except ValueError:
             pass
+    recent.sort(key=lambda c: c.get("created_at", ""), reverse=True)
     return recent[:limit]
 
 
 def get_all(limit: int = 100) -> list[dict]:
-    """获取全部案例"""
-    return _load()[-limit:]
+    """获取全部案例（最新在前）"""
+    cases = _load()
+    # 按创建时间降序排列，最新入库的排在最前面
+    cases.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+    return cases[:limit]
 
 
 def count() -> dict:
@@ -119,7 +123,7 @@ def count() -> dict:
     return {
         "total": len(cases),
         "by_niche": niches,
-        "last_updated": cases[-1]["created_at"] if cases else "暂无",
+        "last_updated": max((c.get("created_at", "") for c in cases), default="暂无"),
     }
 
 
