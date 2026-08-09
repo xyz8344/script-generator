@@ -169,6 +169,7 @@ def collect_and_store(
     threshold_likes: int = 10000,
     max_videos: int = 10,
     use_popular: bool = False,
+    custom_keyword: str = "",
 ) -> dict:
     """
     采集 + 拆解 + 入库 一条龙
@@ -187,7 +188,7 @@ def collect_and_store(
     if use_popular:
         raw_videos = get_popular_videos(ps=max_videos)
     else:
-        keyword = NICHE_KEYWORDS.get(niche, niche)
+        keyword = custom_keyword if custom_keyword else NICHE_KEYWORDS.get(niche, niche)
         raw_videos = search_videos(keyword, limit=max_videos)
 
     if not raw_videos:

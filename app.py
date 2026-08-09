@@ -499,6 +499,15 @@ elif page == "📚 知识库管理":
             horizontal=True,
         )
 
+        # 自定义关键词（仅搜索模式）
+        custom_keyword = ""
+        if "关键词" in collect_method:
+            custom_keyword = st.text_input(
+                "🔑 自定义搜索关键词（留空则自动根据赛道匹配）",
+                placeholder="例如：AI 工具 效率提升",
+                key="custom_keyword",
+            )
+
         # 更新按钮
         st.markdown("")
         col1, col2, col3 = st.columns([1, 2, 1])
@@ -523,6 +532,7 @@ elif page == "📚 知识库管理":
                         threshold_likes=threshold,
                         max_videos=max_collect,
                         use_popular=use_popular,
+                        custom_keyword=custom_keyword,
                     )
 
                     progress.progress(90, text="📝 处理完成...")
