@@ -3,15 +3,19 @@
 """
 import requests
 import time
+import hashlib
+import urllib.parse
+import functools
 from datetime import datetime
 from typing import Optional
 import knowledge_db as db
 
 
 # --- B站 API ---
-BILIBILI_SEARCH = "https://api.bilibili.com/x/web-interface/search/type"
+BILIBILI_SEARCH = "https://api.bilibili.com/x/web-interface/wbi/search/type"
 BILIBILI_POPULAR = "https://api.bilibili.com/x/web-interface/popular"
 BILIBILI_VIDEO_INFO = "https://api.bilibili.com/x/web-interface/view"
+BILIBILI_NAV = "https://api.bilibili.com/x/web-interface/nav"
 BILIBILI_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://www.bilibili.com",
@@ -19,6 +23,16 @@ BILIBILI_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9",
     "Cookie": "buvid3=auto; buvid4=auto; buvid_fp=auto",  # 基础标识，降低风控概率
 }
+
+# WBI 签名相关
+WBI_MIX_TABLE = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+    22, 25, 54, 21, 56, 59, 6, 63, 11, 36, 20, 62, 57, 44, 52,
+]
+_wbi_key_cache: Optional[str] = None
+_wbi_key_time: float = 0
 
 # 赛道 → B站搜索关键词映射
 NICHE_KEYWORDS = {
@@ -38,15 +52,67 @@ NICHE_KEYWORDS = {
 }
 
 
+# --- WBI 签名 ---
+def _get_wbi_key() -> str:
+    """获取 WBI 签名密钥（缓存 30 分钟）"""
+    global _wbi_key_cache, _wbi_key_time
+    now = time.time()
+    if _wbi_key_cache and (now - _wbi_key_time) < 1800:
+        return _wbi_key_cache
+
+    try:
+        resp = requests.get(BILIBILI_NAV, headers=BILIBILI_HEADERS, timeout=10)
+        if _is_blocked(resp):
+            return ""
+        data = resp.json()
+        wbi_img = data.get("data", {}).get("wbi_img", {})
+        img_url = wbi_img.get("img_url", "")
+        sub_url = wbi_img.get("sub_url", "")
+        # 从URL提取文件名（去掉路径和扩展名）
+        img_key = img_url.rsplit("/", 1)[-1].split(".")[0] if img_url else ""
+        sub_key = sub_url.rsplit("/", 1)[-1].split(".")[0] if sub_url else ""
+        if not img_key or not sub_key:
+            return ""
+        raw = img_key + sub_key
+        mix_key = "".join(raw[i] for i in WBI_MIX_TABLE if i < len(raw))[:32]
+        _wbi_key_cache = mix_key
+        _wbi_key_time = now
+        return mix_key
+    except Exception:
+        return _wbi_key_cache or ""
+
+
+def _sign_params(params: dict) -> dict:
+    """为请求参数添加 WBI 签名（w_rid + wts）"""
+    mix_key = _get_wbi_key()
+    if not mix_key:
+        return params  # 无法签名，原样返回
+
+    params["wts"] = int(time.time())
+    # 按 key 排序
+    sorted_keys = sorted(params.keys())
+    query_parts = []
+    for k in sorted_keys:
+        v = params[k]
+        # URL 编码，但 ~ 不编码（与 B站 js 行为一致）
+        encoded = urllib.parse.quote(str(v), safe="~")
+        query_parts.append(f"{k}={encoded}")
+    query_string = "&".join(query_parts)
+    w_rid = hashlib.md5((query_string + mix_key).encode()).hexdigest()
+    params["w_rid"] = w_rid
+    return params
+
+
 def search_videos(keyword: str, limit: int = 20) -> list[dict]:
-    """搜索B站视频"""
+    """搜索B站视频（WBI 签名，海外服务器可用）"""
     params = {
         "search_type": "video",
         "keyword": keyword,
-        "order": "click",  # 按播放量排序
-        "duration": 4,     # 10分钟以内
+        "order": "click",
+        "duration": 4,
         "page": 1,
     }
+    params = _sign_params(params)
     try:
         resp = requests.get(
             BILIBILI_SEARCH, params=params,
