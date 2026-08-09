@@ -5,6 +5,7 @@
 """
 import streamlit as st
 import requests
+import re
 import os
 import json
 import time
@@ -629,39 +630,158 @@ elif page == "📚 知识库管理":
 
     # === 手动录入 Tab ===
     with tab3:
-        st.markdown("### ✍️ 手动录入爆款案例")
-        st.markdown("刷到好视频？手动粘贴信息，系统会自动拆解脚本结构。")
+        st.markdown("### ✍️ 一键录入")
+        st.markdown("粘贴 B站/抖音/小红书 视频链接，系统自动获取信息 + AI 拆解脚本，无需手动填写。")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            manual_title = st.text_input("视频标题 *", placeholder="粘贴视频标题...", key="manual_title")
-            manual_url = st.text_input("视频链接", placeholder="https://...", key="manual_url")
-            manual_niche = st.selectbox("所属赛道", NICHE_SUGGESTIONS, key="manual_niche")
-            manual_platform = st.selectbox("平台", ["抖音", "小红书", "B站", "视频号"], key="manual_platform")
-        with col2:
-            manual_text = st.text_area(
-                "视频文案/字幕内容",
-                placeholder="如果有视频字幕或文案，粘贴到这里。\n留空则只根据标题和描述拆解。\n\n提示：越完整的文案，拆解越精准。",
-                height=200,
-                key="manual_text",
-            )
-            manual_likes = st.text_input("点赞数", placeholder="例如：5.2万", key="manual_likes")
-
-        # 仅标题录入
-        st.markdown("---")
-        st.markdown("#### ⚡ 快速录入（仅标题）")
-
-        quick_titles = st.text_area(
-            "批量录入标题",
-            placeholder="每行一个视频标题，系统自动拆解。\n例如：\n新人入职第一天千万别做这三件事\n面试官最讨厌的5个回答\n35岁被裁后才明白的真相",
-            height=120,
-            key="quick_titles",
+        # ===== 一键链接录入 =====
+        quick_url = st.text_input(
+            "🔗 视频链接",
+            placeholder="粘贴视频链接，例如 https://www.bilibili.com/video/BV1xx411c7mD",
+            key="quick_url",
         )
-        quick_niche = st.selectbox("统一赛道", NICHE_SUGGESTIONS, key="quick_niche")
 
-        col1, col2, col3 = st.columns([1, 1, 3])
+        # 自动识别平台
+        platform_detected = "未知"
+        if quick_url:
+            if "bilibili" in quick_url:
+                platform_detected = "B站"
+            elif "douyin" in quick_url or "v.douyin" in quick_url:
+                platform_detected = "抖音"
+            elif "xiaohongshu" in quick_url or "xhslink" in quick_url:
+                platform_detected = "小红书"
+            elif "weishi" in quick_url:
+                platform_detected = "视频号"
+
+        col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button("📝 录入详细案例", type="primary", use_container_width=True, disabled=not manual_title):
+            analyze_btn = st.button(
+                "🔍 一键分析",
+                type="primary",
+                use_container_width=True,
+                disabled=not quick_url,
+            )
+
+        if analyze_btn and quick_url:
+            with st.status("🔄 处理中...", expanded=True) as status:
+                bvid = None
+                video_info = None
+
+                # B站链接：自动获取视频信息
+                if "bilibili" in quick_url and "BV" in quick_url:
+                    st.write("📡 正在从 B站 获取视频信息...")
+                    match = re.search(r'BV[a-zA-Z0-9]+', quick_url)
+                    if match:
+                        bvid = match.group()
+                        enriched = collector._enrich_video_stats(bvid)
+                        if enriched:
+                            # 再获取标题、作者、描述等
+                            try:
+                                resp = requests.get(
+                                    "https://api.bilibili.com/x/web-interface/view",
+                                    params={"bvid": bvid},
+                                    headers=collector.BILIBILI_HEADERS,
+                                    timeout=10,
+                                )
+                                data = resp.json()
+                                if data.get("code") == 0:
+                                    d = data["data"]
+                                    video_info = {
+                                        "title": d.get("title", ""),
+                                        "url": quick_url,
+                                        "description": d.get("desc", ""),
+                                        "tags": d.get("tagname", "").split(",") if d.get("tagname") else [],
+                                        "views": collector._fmt_num(enriched.get("views_raw", 0)),
+                                        "likes": collector._fmt_num(enriched.get("likes_raw", 0)),
+                                        "comments": collector._fmt_num(enriched.get("comments_raw", 0)),
+                                        "likes_raw": enriched.get("likes_raw", 0),
+                                        "duration": f"{d.get('duration', 0) // 60}:{d.get('duration', 0) % 60:02d}",
+                                        "author": d.get("owner", {}).get("name", ""),
+                                        "platform": "B站",
+                                        "bvid": bvid,
+                                    }
+                                    st.write(f"✅ 已获取：**{video_info['title'][:50]}...**")
+                                    st.write(f"📊 {video_info['views']} 播放 · {video_info['likes']} 点赞")
+                            except Exception:
+                                pass
+
+                if not video_info:
+                    # 非B站链接或获取失败：让用户补充标题
+                    video_info = {
+                        "title": quick_url.split("/")[-1][:50] if quick_url else "未命名视频",
+                        "url": quick_url,
+                        "description": "",
+                        "tags": [],
+                        "views": "?",
+                        "likes": "?",
+                        "comments": "?",
+                        "likes_raw": 0,
+                        "duration": "",
+                        "author": "",
+                        "platform": platform_detected if platform_detected != "未知" else "B站",
+                    }
+                    st.write("⚠️ 无法自动获取信息，将基于链接进行分析")
+
+                # AI 拆解
+                st.write("🧠 AI 拆解脚本结构中...")
+                analysis = collector.analyze_script_structure(video_info, call_llm)
+
+                # 自动推断赛道
+                inferred_niche = "其他"
+                title_tags = video_info.get("title", "") + " " + " ".join(video_info.get("tags", []))
+                for niche in ["知识口播", "职场成长", "情感关系", "美妆护肤", "美食探店",
+                              "穿搭时尚", "健身减脂", "母婴育儿", "科技数码", "财经商业",
+                              "搞笑娱乐", "旅行Vlog", "家居装修"]:
+                    if niche[:2] in title_tags:
+                        inferred_niche = niche
+                        break
+
+                # 入库
+                case = {
+                    "title": video_info["title"],
+                    "url": video_info["url"],
+                    "platform": video_info["platform"],
+                    "niche": inferred_niche,
+                    "views": video_info.get("views", "?"),
+                    "likes": video_info.get("likes", "?"),
+                    "comments": video_info.get("comments", "?"),
+                    "duration": video_info.get("duration", ""),
+                    "author": video_info.get("author", ""),
+                    "description": video_info.get("description", "")[:500],
+                    "tags": video_info.get("tags", []),
+                    "script_analysis": analysis,
+                    "source": "一键录入",
+                }
+                db.add_case(case)
+
+                status.update(label="✅ 分析完成！", state="complete")
+                st.success(f"✅ 已入库：**{video_info['title'][:50]}...**")
+                st.markdown("---")
+                st.markdown("#### 📝 拆解结果")
+                st.markdown(analysis)
+                st.info(f"🏷️ 自动归类赛道：**{inferred_niche}**")
+
+        st.markdown("---")
+
+        # ===== 高级：手动/批量录入（折叠） =====
+        with st.expander("📝 高级：手动详细录入 / 批量录入", expanded=False):
+            st.markdown("适用于非 B站 链接，或需要自定义字段的场景。")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                manual_title = st.text_input("视频标题 *", placeholder="粘贴视频标题...", key="manual_title")
+                manual_url = st.text_input("视频链接", placeholder="https://...", key="manual_url")
+                manual_niche = st.selectbox("所属赛道", NICHE_SUGGESTIONS, key="manual_niche")
+                manual_platform = st.selectbox("平台", ["抖音", "小红书", "B站", "视频号"], key="manual_platform")
+            with col2:
+                manual_text = st.text_area(
+                    "视频文案/字幕内容（可选，越完整拆解越精准）",
+                    placeholder="如果有视频字幕或文案，粘贴到这里。",
+                    height=150,
+                    key="manual_text",
+                )
+                manual_likes = st.text_input("点赞数", placeholder="例如：5.2万", key="manual_likes")
+
+            if st.button("📝 录入详细案例", type="primary", disabled=not manual_title):
                 with st.spinner("AI 拆解中..."):
                     fake_video = {
                         "title": manual_title,
@@ -690,9 +810,20 @@ elif page == "📚 知识库管理":
                         "source": "手动录入",
                     })
                     st.success(f"✅ 已入库：{manual_title[:40]}...")
+                    st.rerun()
 
-        with col2:
-            if st.button("⚡ 批量快速录入", use_container_width=True, disabled=not quick_titles):
+            st.markdown("---")
+            st.markdown("#### ⚡ 批量快速录入（仅标题）")
+
+            quick_titles = st.text_area(
+                "每行一个视频标题",
+                placeholder="新人入职第一天千万别做这三件事\n面试官最讨厌的5个回答\n35岁被裁后才明白的真相",
+                height=120,
+                key="quick_titles",
+            )
+            quick_niche = st.selectbox("统一赛道", NICHE_SUGGESTIONS, key="quick_niche")
+
+            if st.button("⚡ 批量快速录入", disabled=not quick_titles):
                 titles = [t.strip() for t in quick_titles.split("\n") if t.strip()]
                 added = 0
                 progress = st.progress(0)
